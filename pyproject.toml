@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poleric-browser-state-capture"
+version = "0.1.0"
+description = "Interactive Playwright CLI to capture popup/auth browser state bundles"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Poleric" }
+]
+license = { text = "Proprietary" }
+dependencies = [
+  "playwright>=1.51,<2.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/polericai/poleric-browser-state-capture"
+Repository = "https://github.com/polericai/poleric-browser-state-capture"
+
+[project.scripts]
+poleric-state-capture = "capture_state:main"
+
+[tool.setuptools]
+py-modules = ["capture_state"]
