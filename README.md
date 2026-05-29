@@ -6,26 +6,40 @@ This repository is designed for two real workflows:
 1. `popup` mode: user dismisses promo/country/consent overlays once.
 2. `auth` mode: user logs in (including OTP) once.
 
-The output format is now a single JSON bundle file.
+The output format is a single JSON bundle file.
 
-## Why this exists
-
-SaaS runners are server-side and cannot do manual OTP or manual popup dismissal by themselves.
-This tool lets a user do that one-time manual interaction locally, then upload state for automated server runs.
-
-## Requirements
-
-- Python 3.10+
-- Playwright Python package
-- Browser binaries installed for Playwright
-
-## Setup
+## One-command install (macOS/Linux, `.sh`)
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
+curl -fsSL https://raw.githubusercontent.com/polericai/poleric-browser-state-capture/main/install.sh | bash
+```
+
+What this does:
+1. Detects Python
+2. Installs/upgrades `pipx`
+3. Installs/upgrades `poleric-browser-state-capture`
+4. Installs Playwright Chromium browser binaries
+
+After install:
+
+```bash
+poleric-state-capture --help
+```
+
+If command is not found immediately, run:
+
+```bash
+python3 -m pipx ensurepath
+```
+
+Then open a new terminal.
+
+## Windows note
+
+Windows can run the cross-platform Python bootstrap:
+
+```bash
+py -3 -c "import urllib.request,tempfile,pathlib,runpy;u='https://raw.githubusercontent.com/polericai/poleric-browser-state-capture/main/install.py';p=pathlib.Path(tempfile.gettempdir())/'poleric_install.py';p.write_bytes(urllib.request.urlopen(u,timeout=60).read());runpy.run_path(str(p),run_name='__main__')"
 ```
 
 ## Bundle naming
@@ -40,7 +54,7 @@ playwright install chromium
 ### Capture popup-state (example: Bombas)
 
 ```bash
-python capture_state.py capture \
+poleric-state-capture capture \
   --mode popup \
   --url https://bombas.com/ \
   --bundle bombas-popup
@@ -55,7 +69,7 @@ What to do in browser:
 ### Capture auth-state (example: LMNT account OTP)
 
 ```bash
-python capture_state.py capture \
+poleric-state-capture capture \
   --mode auth \
   --url https://drinklmnt.com/account \
   --bundle lmnt-auth
@@ -69,14 +83,14 @@ What to do in browser:
 ### Verify bundle reuse
 
 ```bash
-python capture_state.py verify \
+poleric-state-capture verify \
   --mode popup \
   --url https://bombas.com/ \
   --bundle bombas-popup
 ```
 
 ```bash
-python capture_state.py verify \
+poleric-state-capture verify \
   --mode auth \
   --url https://drinklmnt.com/account \
   --bundle lmnt-auth
@@ -85,7 +99,7 @@ python capture_state.py verify \
 Optional strict checks:
 
 ```bash
-python capture_state.py verify \
+poleric-state-capture verify \
   --mode popup \
   --url https://bombas.com/ \
   --bundle bombas-popup \
