@@ -27,7 +27,6 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 DEFAULT_OUTPUT_DIR = "browser_state"
-DEFAULT_VIEWPORT = {"width": 1440, "height": 900}
 SUPPORTED_BROWSERS = ("chromium", "firefox", "webkit")
 BUNDLE_SCHEMA = "poleric.browser_state_bundle.v1"
 SUPPORTED_MODES = ("popup", "auth", "general")
@@ -317,13 +316,11 @@ def launch_context_and_page(playwright: Any, args: argparse.Namespace, paths: di
         context = browser_type.launch_persistent_context(
             str(paths["profile_dir"]),
             headless=args.headless,
-            viewport=DEFAULT_VIEWPORT,
             service_workers=args.service_workers,
         )
     else:
         browser = browser_type.launch(headless=args.headless)
         context_kwargs: dict[str, Any] = {
-            "viewport": DEFAULT_VIEWPORT,
             "service_workers": args.service_workers,
         }
         if reuse_bundle:
@@ -580,7 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_shared_args(verify)
     verify.add_argument("--expect-visible-css", help="Fail if this CSS selector is not visible.")
     verify.add_argument("--reject-visible-css", help="Fail if this CSS selector is visible.")
-    verify.add_argument("--post-wait-ms", type=int, default=2500, help="Extra wait after navigation.")
+    verify.add_argument("--post-wait-ms", type=int, default=5000, help="Extra wait after navigation.")
 
     return parser
 
