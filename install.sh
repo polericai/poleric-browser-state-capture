@@ -29,6 +29,20 @@ run_py() {
   "$PYTHON_BIN" "$@"
 }
 
+pipx_cli() {
+  if command -v pipx >/dev/null 2>&1; then
+    pipx "$@"
+    return $?
+  fi
+
+  if run_py -m pipx --version >/dev/null 2>&1; then
+    run_py -m pipx "$@"
+    return $?
+  fi
+
+  return 1
+}
+
 ensure_pip() {
   if run_py -m pip --version >/dev/null 2>&1; then
     return 0
@@ -42,28 +56,104 @@ ensure_pip() {
   fi
 }
 
-install_or_upgrade_pipx() {
-  log "Installing/upgrading pipx in user scope..."
-  run_py -m pip install --user --upgrade pipx
+install_pipx_with_system_manager() {
+  if command -v brew >/dev/null 2>&1; then
+    log "Installing pipx with Homebrew..."
+    brew install pipx || brew upgrade pipx || true
+    return 0
+  fi
 
-  # Best-effort PATH update for future shells.
-  run_py -m pipx ensurepath || true
+  if command -v apt-get >/dev/null 2>&1; then
+    log "Installing pipx with apt-get..."
+    if [ "$(id -u)" -eq 0 ]; then
+      apt-get update -y && apt-get install -y pipx
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apt-get update -y && sudo apt-get install -y pipx
+    else
+      return 1
+    fi
+    return 0
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    log "Installing pipx with dnf..."
+    if [ "$(id -u)" -eq 0 ]; then
+      dnf install -y pipx
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo dnf install -y pipx
+    else
+      return 1
+    fi
+    return 0
+  fi
+
+  if command -v yum >/dev/null 2>&1; then
+    log "Installing pipx with yum..."
+    if [ "$(id -u)" -eq 0 ]; then
+      yum install -y pipx
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo yum install -y pipx
+    else
+      return 1
+    fi
+    return 0
+  fi
+
+  if command -v pacman >/dev/null 2>&1; then
+    log "Installing pipx with pacman..."
+    if [ "$(id -u)" -eq 0 ]; then
+      pacman -Sy --noconfirm pipx
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo pacman -Sy --noconfirm pipx
+    else
+      return 1
+    fi
+    return 0
+  fi
+
+  return 1
+}
+
+install_or_upgrade_pipx() {
+  if pipx_cli --version >/dev/null 2>&1; then
+    log "pipx already available."
+    pipx_cli ensurepath || true
+    return 0
+  fi
+
+  log "pipx not found. Attempting system package manager install first..."
+  install_pipx_with_system_manager || true
+
+  if pipx_cli --version >/dev/null 2>&1; then
+    pipx_cli ensurepath || true
+    return 0
+  fi
+
+  log "System package manager path failed. Attempting Python user install for pipx..."
+  if run_py -m pip install --user --upgrade pipx; then
+    pipx_cli ensurepath || true
+    return 0
+  fi
+
+  log "Unable to install pipx automatically on this system."
+  log "Please install pipx manually, then rerun this installer."
+  exit 1
 }
 
 install_or_upgrade_tool() {
   log "Installing/upgrading $PACKAGE_NAME via pipx..."
 
-  if run_py -m pipx install --force "$PACKAGE_NAME"; then
+  if pipx_cli install --force "$PACKAGE_NAME"; then
     return 0
   fi
 
   log "PyPI install failed. Falling back to GitHub source..."
-  run_py -m pipx install --force "$GIT_FALLBACK_SPEC"
+  pipx_cli install --force "$GIT_FALLBACK_SPEC"
 }
 
 install_playwright_browsers() {
   log "Installing Playwright Chromium browser binaries..."
-  run_py -m pipx run --spec playwright playwright install chromium
+  pipx_cli run --spec playwright playwright install chromium
 }
 
 print_next_steps() {
@@ -73,10 +163,8 @@ print_next_steps() {
 [poleric-installer] Open a new terminal (or reload shell) and run:
   poleric-state-capture --help
 
-If command is still not found, use:
-  python3 -m pipx ensurepath
-(or)
-  python -m pipx ensurepath
+If command is still not found, run:
+  pipx ensurepath
 then restart terminal.
 MSG
 }
