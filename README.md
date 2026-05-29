@@ -6,7 +6,7 @@ This repository is designed for two real workflows:
 1. `popup` mode: user dismisses promo/country/consent overlays once.
 2. `auth` mode: user logs in (including OTP) once.
 
-The output format is Playwright-native (`storage_state.json`) plus `session_storage.json`.
+The output format is now a single JSON bundle file.
 
 ## Why this exists
 
@@ -25,8 +25,15 @@ This tool lets a user do that one-time manual interaction locally, then upload s
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-playwright install
+playwright install chromium
 ```
+
+## Bundle naming
+
+- If `--bundle` is provided, that name is used as JSON filename.
+  - Example: `--bundle bombas-popup` => `state_bundles/bombas-popup.json`
+- If `--bundle` is omitted, static default name is used:
+  - `state_bundles/state_bundle.json`
 
 ## Commands
 
@@ -65,26 +72,37 @@ What to do in browser:
 python capture_state.py verify \
   --mode popup \
   --url https://bombas.com/ \
-  --bundle bombas-popup \
-  --reject-visible-css '[role="dialog"]'
+  --bundle bombas-popup
 ```
 
 ```bash
 python capture_state.py verify \
   --mode auth \
   --url https://drinklmnt.com/account \
-  --bundle lmnt-auth \
-  --expect-visible-css 'a[href*="logout"], button:has-text("Log out")'
+  --bundle lmnt-auth
+```
+
+Optional strict checks:
+
+```bash
+python capture_state.py verify \
+  --mode popup \
+  --url https://bombas.com/ \
+  --bundle bombas-popup \
+  --reject-visible-css '[role="dialog"]'
 ```
 
 ## Output structure
 
-Each bundle is created under `state_bundles/<bundle-name>/`:
+Each capture writes one JSON bundle file under `state_bundles/`.
 
-- `storage_state.json`
-- `session_storage.json`
-- `meta.json`
-- `user_profile/` (if `--persistent-profile` is enabled)
+The bundle includes:
+- `storage_state` (Playwright cookies/localStorage/indexedDB)
+- `session_storage` (by origin)
+- `meta` (capture metadata)
+
+Verification screenshot is saved as:
+- `state_bundles/<bundle-stem>_verify.png`
 
 ## Security note
 
