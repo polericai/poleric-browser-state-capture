@@ -26,11 +26,11 @@ from urllib.parse import urlparse
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-DEFAULT_OUTPUT_DIR = "state_bundles"
-DEFAULT_BUNDLE_FILENAME = "state_bundle.json"
+DEFAULT_OUTPUT_DIR = "browser_state"
 DEFAULT_VIEWPORT = {"width": 1440, "height": 900}
 SUPPORTED_BROWSERS = ("chromium", "firefox", "webkit")
 BUNDLE_SCHEMA = "poleric.browser_state_bundle.v1"
+SUPPORTED_MODES = ("popup", "auth", "general")
 
 SESSION_EXTRACT_JS = """() => {
   const data = {};
@@ -73,15 +73,41 @@ def slugify(text: str) -> str:
     return cleaned or "site"
 
 
-def site_key_from_url(url: str) -> str:
-    parsed = urlparse(url)
-    host = parsed.netloc or parsed.path
-    host = host.lower().replace("www.", "")
-    return slugify(host)
-
-
 def ensure_json_filename(name: str) -> str:
     return name if name.lower().endswith(".json") else f"{name}.json"
+
+
+def domain_main_name(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or parsed.netloc or parsed.path or "").lower()
+    host = host.replace("www.", "")
+    labels = [label for label in host.split(".") if label]
+    if not labels:
+        return "site"
+
+    multipart_suffixes = {
+        "co.uk",
+        "org.uk",
+        "ac.uk",
+        "com.au",
+        "net.au",
+        "org.au",
+        "co.in",
+        "com.br",
+        "com.mx",
+        "co.jp",
+        "co.kr",
+    }
+
+    if len(labels) >= 3:
+        suffix = ".".join(labels[-2:])
+        if suffix in multipart_suffixes:
+            return slugify(labels[-3])
+
+    if len(labels) >= 2:
+        return slugify(labels[-2])
+
+    return slugify(labels[0])
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -119,15 +145,15 @@ def normalize_storage_state_payload(payload: Any) -> dict[str, Any]:
     cookies = payload.get("cookies")
     origins = payload.get("origins")
 
-    normalized = {
+    normalized: dict[str, Any] = {
         "cookies": cookies if isinstance(cookies, list) else [],
         "origins": origins if isinstance(origins, list) else [],
     }
 
-    # Keep any optional Playwright fields if they exist.
     for key, value in payload.items():
         if key not in normalized:
             normalized[key] = value
+
     return normalized
 
 
@@ -155,6 +181,7 @@ def local_storage_map_from_state(state: dict[str, Any]) -> dict[str, dict[str, s
                 mapped[key] = "" if value is None else str(value)
         if mapped:
             out[origin] = mapped
+
     return out
 
 
@@ -180,6 +207,7 @@ def build_storage_init_script(storage_map: dict[str, dict[str, str]], storage_ki
 def summarize_cookies(cookies: list[dict[str, Any]]) -> dict[str, Any]:
     now_ts = int(datetime.now(timezone.utc).timestamp())
     expiries: list[int] = []
+
     for cookie in cookies:
         exp = cookie.get("expires")
         if isinstance(exp, (int, float)) and exp > 0:
@@ -190,35 +218,41 @@ def summarize_cookies(cookies: list[dict[str, Any]]) -> dict[str, Any]:
         "http_only_count": sum(1 for c in cookies if c.get("httpOnly") is True),
         "secure_count": sum(1 for c in cookies if c.get("secure") is True),
     }
+
     if expiries:
         summary["earliest_expiry_unix"] = min(expiries)
         summary["latest_expiry_unix"] = max(expiries)
         summary["expired_count"] = sum(1 for value in expiries if value <= now_ts)
+
     return summary
 
 
 def resolve_bundle_paths(args: argparse.Namespace) -> dict[str, Path]:
     output_dir = Path(args.output_dir).resolve()
+    mode = normalized_mode(args.mode)
 
-    if args.bundle:
-        file_name = ensure_json_filename(args.bundle)
+    if args.file_name:
+        file_name = ensure_json_filename(Path(args.file_name).name)
     else:
-        file_name = DEFAULT_BUNDLE_FILENAME
+        domain = domain_main_name(args.url)
+        if mode == "popup":
+            file_name = f"{domain}-popup-state.json"
+        elif mode == "auth":
+            file_name = f"{domain}-auth-state.json"
+        else:
+            file_name = f"{domain}-state.json"
 
     bundle_file = output_dir / file_name
-    bundle_key = Path(file_name).stem or site_key_from_url(args.url)
+    bundle_key = Path(file_name).stem or domain_main_name(args.url)
 
     if args.profile_dir:
         profile_dir = Path(args.profile_dir).resolve()
     else:
         profile_dir = output_dir / f"{bundle_key}_profile"
 
-    verify_screenshot = output_dir / f"{bundle_key}_verify.png"
-
     return {
         "output_dir": output_dir,
         "bundle_file": bundle_file,
-        "verify_screenshot": verify_screenshot,
         "profile_dir": profile_dir,
     }
 
@@ -229,8 +263,14 @@ def ensure_url(url: str) -> str:
     return url
 
 
+def normalized_mode(raw_mode: str | None) -> str:
+    if raw_mode in SUPPORTED_MODES:
+        return raw_mode
+    return "general"
+
+
 def parse_bundle_payload(payload: Any) -> tuple[dict[str, Any], dict[str, dict[str, str]], dict[str, Any]]:
-    # Legacy support: allow a raw Playwright storage_state JSON as input.
+    # Legacy support: raw Playwright storage_state JSON.
     if isinstance(payload, dict) and "cookies" in payload and "origins" in payload and "storage_state" not in payload:
         storage_state = normalize_storage_state_payload(payload)
         return storage_state, {}, {}
@@ -241,6 +281,7 @@ def parse_bundle_payload(payload: Any) -> tuple[dict[str, Any], dict[str, dict[s
     storage_state = normalize_storage_state_payload(payload.get("storage_state", {}))
     session_storage = normalize_session_payload(payload.get("session_storage", {}))
     meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+
     return storage_state, session_storage, meta
 
 
@@ -289,11 +330,9 @@ def launch_context_and_page(playwright: Any, args: argparse.Namespace, paths: di
             context_kwargs["storage_state"] = storage_state_payload
         context = browser.new_context(**context_kwargs)
 
-    # sessionStorage is not in Playwright storage_state, so we inject it.
     if session_by_origin:
         context.add_init_script(script=build_storage_init_script(session_by_origin, "sessionStorage"))
 
-    # For persistent profile mode, rehydrate cookies/localStorage from bundle too.
     if args.persistent_profile and reuse_bundle:
         if cookies_for_add:
             context.add_cookies(cookies_for_add)
@@ -333,6 +372,7 @@ def build_bundle_payload(
 
 def capture_command(args: argparse.Namespace) -> int:
     args.url = ensure_url(args.url)
+    args.mode = normalized_mode(args.mode)
     paths = resolve_bundle_paths(args)
     paths["output_dir"].mkdir(parents=True, exist_ok=True)
 
@@ -350,12 +390,13 @@ def capture_command(args: argparse.Namespace) -> int:
 
             if args.mode == "popup":
                 print("[ACTION] In the browser, dismiss popup/consent/country prompts as needed.")
-            else:
+            elif args.mode == "auth":
                 print("[ACTION] In the browser, complete login/OTP/account steps.")
+            else:
+                print("[ACTION] In the browser, do the required setup (popup/country/login) as needed.")
 
             input("[PROMPT] Press Enter after you finish manual actions and page is stable... ")
 
-            # Save Playwright storage state in-memory first.
             try:
                 state_payload = context.storage_state(indexed_db=True)
                 indexed_db_saved = True
@@ -435,6 +476,7 @@ def capture_command(args: argparse.Namespace) -> int:
 
 def verify_command(args: argparse.Namespace) -> int:
     args.url = ensure_url(args.url)
+    args.mode = normalized_mode(args.mode)
     paths = resolve_bundle_paths(args)
 
     if not paths["bundle_file"].exists():
@@ -459,7 +501,6 @@ def verify_command(args: argparse.Namespace) -> int:
                 checks["expect_visible_css"] = {"selector": args.expect_visible_css, "visible": visible}
                 if not visible:
                     print(f"[ERROR] Expected visible selector not found: {args.expect_visible_css}")
-                    page.screenshot(path=str(paths["verify_screenshot"]), full_page=True)
                     return 3
 
             if args.reject_visible_css:
@@ -467,15 +508,12 @@ def verify_command(args: argparse.Namespace) -> int:
                 checks["reject_visible_css"] = {"selector": args.reject_visible_css, "visible": visible}
                 if visible:
                     print(f"[ERROR] Rejected selector is visible: {args.reject_visible_css}")
-                    page.screenshot(path=str(paths["verify_screenshot"]), full_page=True)
                     return 4
 
             dialog_probe = page.evaluate(DIALOG_SCAN_JS)
             if isinstance(dialog_probe, dict):
                 checks["dialog_probe"] = dialog_probe
 
-            page.screenshot(path=str(paths["verify_screenshot"]), full_page=True)
-            print(f"[DONE] Verification screenshot: {paths['verify_screenshot']}")
             print(json.dumps(checks, indent=2))
             return 0
 
@@ -506,15 +544,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_shared_args(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument("--url", required=True, help="Target URL to open in browser.")
-        cmd.add_argument("--mode", choices=("popup", "auth"), required=True, help="Capture mode.")
         cmd.add_argument(
-            "--bundle",
+            "--mode",
+            choices=SUPPORTED_MODES,
+            required=False,
+            help="Optional mode tag. Use popup, auth, or general. Default is general.",
+        )
+        cmd.add_argument(
+            "--file-name",
             help=(
-                "Bundle JSON filename. If omitted, static default is state_bundle.json "
-                "inside --output-dir."
+                "Output JSON filename. If omitted, defaults to <domain>-state.json, "
+                "<domain>-popup-state.json, or <domain>-auth-state.json based on mode."
             ),
         )
-        cmd.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Bundle output directory.")
+        cmd.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Output directory for state bundle files.")
         cmd.add_argument("--browser", choices=SUPPORTED_BROWSERS, default="chromium")
         cmd.add_argument("--headless", action="store_true", help="Run headless (not recommended for manual capture).")
         cmd.add_argument("--timeout-ms", type=int, default=60000, help="Navigation timeout in milliseconds.")

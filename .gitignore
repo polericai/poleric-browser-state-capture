@@ -1,6 +1,8 @@
 .DS_Store
 .venv/
 __pycache__/
+browser_state/
+state_output/
 state_bundles/
 *.egg-info/
 build/

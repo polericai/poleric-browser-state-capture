@@ -2,10 +2,6 @@
 
 Local Playwright helper for generating reusable browser state bundles.
 
-This repository is designed for two real workflows:
-1. `popup` mode: user dismisses promo/country/consent overlays once.
-2. `auth` mode: user logs in (including OTP) once.
-
 The output format is a single JSON bundle file.
 
 ## Dependencies
@@ -51,70 +47,69 @@ Check CLI:
 python capture_state.py --help
 ```
 
-Capture popup-state (example: Bombas):
+Capture with no mode (default mode = `general`):
+
+```bash
+python capture_state.py capture --url https://bombas.com/
+```
+
+Capture popup mode:
+
+```bash
+python capture_state.py capture --mode popup --url https://bombas.com/
+```
+
+Capture auth mode:
+
+```bash
+python capture_state.py capture --mode auth --url https://drinklmnt.com/account
+```
+
+Use your own file name:
 
 ```bash
 python capture_state.py capture \
-  --mode popup \
   --url https://bombas.com/ \
-  --bundle bombas-popup
+  --file-name my-bombas-state.json
 ```
 
-Capture auth-state (example: LMNT account OTP):
+Verify:
 
 ```bash
-python capture_state.py capture \
-  --mode auth \
-  --url https://drinklmnt.com/account \
-  --bundle lmnt-auth
+python capture_state.py verify --url https://bombas.com/
 ```
 
-Verify popup bundle:
+Verify with a specific file:
 
 ```bash
 python capture_state.py verify \
-  --mode popup \
   --url https://bombas.com/ \
-  --bundle bombas-popup
+  --file-name my-bombas-state.json
 ```
 
-Verify auth bundle:
+## Naming rules
 
-```bash
-python capture_state.py verify \
-  --mode auth \
-  --url https://drinklmnt.com/account \
-  --bundle lmnt-auth
-```
+- All output files are written into `browser_state/` by default.
+- If `--file-name` is provided, that user-provided file name is used.
+  - Example: `--file-name my-login.json` => `browser_state/my-login.json`
+- If `--file-name` is omitted, default naming uses domain + mode:
+  - General mode: `<domain>-state.json`
+  - Popup mode: `<domain>-popup-state.json`
+  - Auth mode: `<domain>-auth-state.json`
 
-Optional strict popup check:
-
-```bash
-python capture_state.py verify \
-  --mode popup \
-  --url https://bombas.com/ \
-  --bundle bombas-popup \
-  --reject-visible-css '[role="dialog"]'
-```
-
-## Bundle naming
-
-- If `--bundle` is provided, that name is used as JSON filename.
-  - Example: `--bundle bombas-popup` => `state_bundles/bombas-popup.json`
-- If `--bundle` is omitted, static default name is used:
-  - `state_bundles/state_bundle.json`
+Examples:
+- `https://bombas.com` + no mode => `browser_state/bombas-state.json`
+- `https://bombas.com` + `--mode popup` => `browser_state/bombas-popup-state.json`
+- `https://drinklmnt.com` + `--mode auth` => `browser_state/drinklmnt-auth-state.json`
 
 ## Output structure
 
-Each capture writes one JSON bundle file under `state_bundles/`.
+Each capture writes one JSON bundle file under `browser_state/`.
 
 The bundle includes:
 - `storage_state` (Playwright cookies/localStorage/indexedDB)
 - `session_storage` (by origin)
 - `meta` (capture metadata)
-
-Verification screenshot is saved as:
-- `state_bundles/<bundle-stem>_verify.png`
 
 ## Security note
 
