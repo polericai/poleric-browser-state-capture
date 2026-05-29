@@ -8,38 +8,93 @@ This repository is designed for two real workflows:
 
 The output format is a single JSON bundle file.
 
-## One-command install (macOS/Linux, `.sh`)
+## Dependencies
+
+1. Python `3.10+`
+2. Python package from `requirements.txt`:
+   - `playwright>=1.51,<2.0`
+3. Playwright browser binary:
+   - `chromium` via `playwright install chromium`
+
+## Setup (Git clone + venv)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/polericai/poleric-browser-state-capture/main/install.sh | bash
+git clone https://github.com/polericai/poleric-browser-state-capture.git
+cd poleric-browser-state-capture
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+playwright install chromium
 ```
 
-What this does:
-1. Detects Python
-2. Installs/upgrades `pipx`
-3. Installs/upgrades `poleric-browser-state-capture`
-4. Installs Playwright Chromium browser binaries
+Windows PowerShell activation:
 
-After install:
-
-```bash
-poleric-state-capture --help
+```powershell
+.venv\Scripts\Activate.ps1
 ```
 
-If command is not found immediately, run:
+## Update Existing Clone
 
 ```bash
-python3 -m pipx ensurepath
+git pull
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
 ```
 
-Then open a new terminal.
+## Run commands
 
-## Windows note
-
-Windows can run the cross-platform Python bootstrap:
+Check CLI:
 
 ```bash
-py -3 -c "import urllib.request,tempfile,pathlib,runpy;u='https://raw.githubusercontent.com/polericai/poleric-browser-state-capture/main/install.py';p=pathlib.Path(tempfile.gettempdir())/'poleric_install.py';p.write_bytes(urllib.request.urlopen(u,timeout=60).read());runpy.run_path(str(p),run_name='__main__')"
+python capture_state.py --help
+```
+
+Capture popup-state (example: Bombas):
+
+```bash
+python capture_state.py capture \
+  --mode popup \
+  --url https://bombas.com/ \
+  --bundle bombas-popup
+```
+
+Capture auth-state (example: LMNT account OTP):
+
+```bash
+python capture_state.py capture \
+  --mode auth \
+  --url https://drinklmnt.com/account \
+  --bundle lmnt-auth
+```
+
+Verify popup bundle:
+
+```bash
+python capture_state.py verify \
+  --mode popup \
+  --url https://bombas.com/ \
+  --bundle bombas-popup
+```
+
+Verify auth bundle:
+
+```bash
+python capture_state.py verify \
+  --mode auth \
+  --url https://drinklmnt.com/account \
+  --bundle lmnt-auth
+```
+
+Optional strict popup check:
+
+```bash
+python capture_state.py verify \
+  --mode popup \
+  --url https://bombas.com/ \
+  --bundle bombas-popup \
+  --reject-visible-css '[role="dialog"]'
 ```
 
 ## Bundle naming
@@ -48,63 +103,6 @@ py -3 -c "import urllib.request,tempfile,pathlib,runpy;u='https://raw.githubuser
   - Example: `--bundle bombas-popup` => `state_bundles/bombas-popup.json`
 - If `--bundle` is omitted, static default name is used:
   - `state_bundles/state_bundle.json`
-
-## Commands
-
-### Capture popup-state (example: Bombas)
-
-```bash
-poleric-state-capture capture \
-  --mode popup \
-  --url https://bombas.com/ \
-  --bundle bombas-popup
-```
-
-What to do in browser:
-- close promo popup
-- accept/deny cookie banner as desired
-- select country/store preference if needed
-- return to terminal and press Enter
-
-### Capture auth-state (example: LMNT account OTP)
-
-```bash
-poleric-state-capture capture \
-  --mode auth \
-  --url https://drinklmnt.com/account \
-  --bundle lmnt-auth
-```
-
-What to do in browser:
-- login with OTP/email/password
-- wait until account page is stable
-- return to terminal and press Enter
-
-### Verify bundle reuse
-
-```bash
-poleric-state-capture verify \
-  --mode popup \
-  --url https://bombas.com/ \
-  --bundle bombas-popup
-```
-
-```bash
-poleric-state-capture verify \
-  --mode auth \
-  --url https://drinklmnt.com/account \
-  --bundle lmnt-auth
-```
-
-Optional strict checks:
-
-```bash
-poleric-state-capture verify \
-  --mode popup \
-  --url https://bombas.com/ \
-  --bundle bombas-popup \
-  --reject-visible-css '[role="dialog"]'
-```
 
 ## Output structure
 
