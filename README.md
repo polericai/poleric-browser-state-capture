@@ -50,41 +50,41 @@ python capture_state.py --help
 Capture with no mode (default mode = `general`):
 
 ```bash
-python capture_state.py capture --url https://bombas.com/
+python capture_state.py capture --url https://example-app.test/
 ```
 
 Capture popup mode:
 
 ```bash
-python capture_state.py capture --mode popup --url https://bombas.com/
+python capture_state.py capture --mode popup --url https://example-app.test/
 ```
 
 Capture auth mode:
 
 ```bash
-python capture_state.py capture --mode auth --url https://drinklmnt.com/account
+python capture_state.py capture --mode auth --url https://example-app.test/account
 ```
 
 Use your own file name:
 
 ```bash
 python capture_state.py capture \
-  --url https://bombas.com/ \
-  --file-name my-bombas-state.json
+  --url https://example-app.test/ \
+  --file-name my-browser-state.json
 ```
 
 Verify:
 
 ```bash
-python capture_state.py verify --url https://bombas.com/
+python capture_state.py verify --url https://example-app.test/
 ```
 
 Verify with a specific file:
 
 ```bash
 python capture_state.py verify \
-  --url https://bombas.com/ \
-  --file-name my-bombas-state.json
+  --url https://example-app.test/ \
+  --file-name my-browser-state.json
 ```
 
 ## Naming rules
@@ -98,9 +98,9 @@ python capture_state.py verify \
   - Auth mode: `<domain>-auth-state.json`
 
 Examples:
-- `https://bombas.com` + no mode => `browser_state/bombas-state.json`
-- `https://bombas.com` + `--mode popup` => `browser_state/bombas-popup-state.json`
-- `https://drinklmnt.com` + `--mode auth` => `browser_state/drinklmnt-auth-state.json`
+- `https://example-app.test` + no mode => `browser_state/example-app-state.json`
+- `https://example-app.test` + `--mode popup` => `browser_state/example-app-popup-state.json`
+- `https://example-app.test` + `--mode auth` => `browser_state/example-app-auth-state.json`
 
 ## Output structure
 
