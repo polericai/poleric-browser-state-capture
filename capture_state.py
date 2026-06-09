@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Interactive Playwright state capture utility for Poleric users.
 
-This tool supports two workflows:
-1. popup-state capture (country/consent/promo dismissal)
-2. auth-state capture (login/OTP)
+This tool supports four workflows:
+1. popup-state capture (broad state minus cart data)
+2. auth-state capture (broad state minus cart data)
+3. general-state capture (broad state minus cart data)
+4. raw-state capture (full exact browser state)
 
 Output is a single JSON bundle that includes:
 - Playwright storage_state (cookies/localStorage/indexedDB)
@@ -16,7 +18,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +33,7 @@ from playwright.sync_api import sync_playwright
 DEFAULT_OUTPUT_DIR = "browser_state"
 SUPPORTED_BROWSERS = ("chromium", "firefox", "webkit")
 BUNDLE_SCHEMA = "poleric.browser_state_bundle.v1"
-SUPPORTED_MODES = ("popup", "auth", "general")
+SUPPORTED_MODES = ("popup", "auth", "general", "raw")
 
 SESSION_EXTRACT_JS = """() => {
   const data = {};
@@ -224,6 +228,230 @@ def summarize_cookies(cookies: list[dict[str, Any]]) -> dict[str, Any]:
         summary["expired_count"] = sum(1 for value in expiries if value <= now_ts)
 
     return summary
+DATA_KEYWORDS = (
+    "cart",
+    "checkout",
+    "basket",
+    "bag",
+    "wishlist",
+)
+
+def key_matches(text: str, keywords: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in keywords)
+
+
+def item_identity(name: str, extra: str = "") -> str:
+    return f"{name or ''} {extra or ''}".strip().lower()
+
+
+def should_keep_state_item(identity: str, mode: str) -> bool:
+    """Decide whether a cookie/storage key should be saved for a mode.
+
+    Mode meaning:
+    - popup: broad state minus cart data
+    - auth: broad state minus cart data
+    - general: broad state minus cart data
+    - raw: full raw state
+    """
+    if mode == "raw":
+        return True
+
+    is_cart_data = key_matches(identity, DATA_KEYWORDS)
+
+    if mode in {"popup", "auth", "general"}:
+        return not is_cart_data
+
+    return True
+
+
+def count_local_storage_items(storage_state: dict[str, Any]) -> int:
+    count = 0
+    origins = storage_state.get("origins") if isinstance(storage_state, dict) else []
+    if not isinstance(origins, list):
+        return 0
+    for entry in origins:
+        if not isinstance(entry, dict):
+            continue
+        items = entry.get("localStorage")
+        if isinstance(items, list):
+            count += len(items)
+    return count
+
+
+def count_session_storage_items(session_by_origin: dict[str, dict[str, str]]) -> int:
+    return sum(len(values) for values in session_by_origin.values() if isinstance(values, dict))
+
+
+def filter_cookies(cookies: list[dict[str, Any]], mode: str) -> list[dict[str, Any]]:
+    if mode == "raw":
+        return cookies
+
+    filtered: list[dict[str, Any]] = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get("name") or "")
+        domain = str(cookie.get("domain") or "")
+        identity = item_identity(name, domain)
+        if should_keep_state_item(identity, mode):
+            filtered.append(cookie)
+    return filtered
+
+
+def filter_local_storage_items(items: Any, mode: str) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    if mode == "raw":
+        return [item for item in items if isinstance(item, dict)]
+
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        value = str(item.get("value") or "")
+        identity = item_identity(name, value[:120])
+        if should_keep_state_item(identity, mode):
+            filtered.append(item)
+    return filtered
+
+
+def filter_session_storage(
+    session_by_origin: dict[str, dict[str, str]],
+    mode: str,
+) -> dict[str, dict[str, str]]:
+    if mode == "raw":
+        return session_by_origin
+
+    filtered_by_origin: dict[str, dict[str, str]] = {}
+    for origin, values in session_by_origin.items():
+        if not isinstance(origin, str) or not isinstance(values, dict):
+            continue
+        filtered_values: dict[str, str] = {}
+        for key, value in values.items():
+            identity = item_identity(str(key), str(value)[:120])
+            if should_keep_state_item(identity, mode):
+                filtered_values[str(key)] = "" if value is None else str(value)
+        if filtered_values:
+            filtered_by_origin[origin] = filtered_values
+    return filtered_by_origin
+
+
+def filter_storage_state(
+    storage_state: dict[str, Any],
+    mode: str,
+    *,
+    keep_indexed_db: bool = False,
+) -> dict[str, Any]:
+    if mode == "raw":
+        return storage_state
+
+    normalized = normalize_storage_state_payload(storage_state)
+    filtered_state: dict[str, Any] = {}
+
+    for key, value in normalized.items():
+        if key not in {"cookies", "origins"}:
+            filtered_state[key] = value
+
+    raw_cookies = normalized.get("cookies")
+    cookies = raw_cookies if isinstance(raw_cookies, list) else []
+    filtered_state["cookies"] = filter_cookies(cookies, mode)
+
+    filtered_origins: list[dict[str, Any]] = []
+    origins = normalized.get("origins")
+    if isinstance(origins, list):
+        for entry in origins:
+            if not isinstance(entry, dict):
+                continue
+            origin = entry.get("origin")
+            if not isinstance(origin, str):
+                continue
+
+            new_entry: dict[str, Any] = {"origin": origin}
+            filtered_local_storage = filter_local_storage_items(entry.get("localStorage"), mode)
+            if filtered_local_storage:
+                new_entry["localStorage"] = filtered_local_storage
+
+            # IndexedDB cannot be filtered safely at key level from Playwright's
+            # storage_state output. Keep it only for raw mode by default.
+            # Use --keep-indexed-db if a site needs IndexedDB for a sanitized mode.
+            if keep_indexed_db and "indexedDB" in entry:
+                new_entry["indexedDB"] = entry["indexedDB"]
+
+            if len(new_entry) > 1:
+                filtered_origins.append(new_entry)
+
+    filtered_state["origins"] = filtered_origins
+    return filtered_state
+
+
+def sanitize_bundle_state(
+    *,
+    storage_state: dict[str, Any],
+    session_by_origin: dict[str, dict[str, str]],
+    mode: str,
+    keep_indexed_db: bool = False,
+) -> tuple[dict[str, Any], dict[str, dict[str, str]], dict[str, Any]]:
+    before_cookies = len(storage_state.get("cookies", [])) if isinstance(storage_state.get("cookies"), list) else 0
+    before_local_storage = count_local_storage_items(storage_state)
+    before_session_storage = count_session_storage_items(session_by_origin)
+
+    sanitized_storage_state = filter_storage_state(storage_state, mode, keep_indexed_db=keep_indexed_db)
+    sanitized_session_storage = filter_session_storage(session_by_origin, mode)
+
+    after_cookies = len(sanitized_storage_state.get("cookies", [])) if isinstance(sanitized_storage_state.get("cookies"), list) else 0
+    after_local_storage = count_local_storage_items(sanitized_storage_state)
+    after_session_storage = count_session_storage_items(sanitized_session_storage)
+
+    report: dict[str, Any] = {
+        "mode": mode,
+        "keep_indexed_db": keep_indexed_db,
+        "cookies_before": before_cookies,
+        "cookies_after": after_cookies,
+        "cookies_removed": max(before_cookies - after_cookies, 0),
+        "local_storage_before": before_local_storage,
+        "local_storage_after": after_local_storage,
+        "local_storage_removed": max(before_local_storage - after_local_storage, 0),
+        "session_storage_before": before_session_storage,
+        "session_storage_after": after_session_storage,
+        "session_storage_removed": max(before_session_storage - after_session_storage, 0),
+    }
+
+    if mode != "raw" and not keep_indexed_db:
+        report["indexed_db_note"] = "IndexedDB removed for sanitized modes unless --keep-indexed-db is used."
+
+    return sanitized_storage_state, sanitized_session_storage, report
+
+
+def find_bundle_family_files(bundle_file: Path) -> list[tuple[int, Path]]:
+    pattern = re.compile(rf"^{re.escape(bundle_file.stem)}(?:-(\d+))?{re.escape(bundle_file.suffix)}$")
+    matches: list[tuple[int, Path]] = []
+
+    for candidate in bundle_file.parent.glob(f"{bundle_file.stem}*{bundle_file.suffix}"):
+        match = pattern.match(candidate.name)
+        if not match:
+            continue
+        version = int(match.group(1)) if match.group(1) else 1
+        matches.append((version, candidate))
+
+    return sorted(matches, key=lambda item: item[0])
+
+
+def next_versioned_bundle_file(bundle_file: Path) -> Path:
+    matches = find_bundle_family_files(bundle_file)
+    if not matches:
+        return bundle_file
+
+    next_version = matches[-1][0] + 1
+    return bundle_file.with_name(f"{bundle_file.stem}-{next_version}{bundle_file.suffix}")
+
+
+def latest_existing_bundle_file(bundle_file: Path) -> Path:
+    matches = find_bundle_family_files(bundle_file)
+    if not matches:
+        return bundle_file
+    return matches[-1][1]
 
 
 def resolve_bundle_paths(args: argparse.Namespace) -> dict[str, Path]:
@@ -238,10 +466,15 @@ def resolve_bundle_paths(args: argparse.Namespace) -> dict[str, Path]:
             file_name = f"{domain}-popup-state.json"
         elif mode == "auth":
             file_name = f"{domain}-auth-state.json"
+        elif mode == "raw":
+            file_name = f"{domain}-raw-state.json"
         else:
             file_name = f"{domain}-state.json"
 
     bundle_file = output_dir / file_name
+    existing_bundle_file = latest_existing_bundle_file(bundle_file)
+    if args.command == "capture":
+        bundle_file = next_versioned_bundle_file(bundle_file)
     bundle_key = Path(file_name).stem or domain_main_name(args.url)
 
     if args.profile_dir:
@@ -252,6 +485,7 @@ def resolve_bundle_paths(args: argparse.Namespace) -> dict[str, Path]:
     return {
         "output_dir": output_dir,
         "bundle_file": bundle_file,
+        "existing_bundle_file": existing_bundle_file,
         "profile_dir": profile_dir,
     }
 
@@ -302,9 +536,10 @@ def launch_context_and_page(playwright: Any, args: argparse.Namespace, paths: di
     storage_state_payload: dict[str, Any] = {"cookies": [], "origins": []}
     session_by_origin: dict[str, dict[str, str]] = {}
 
-    reuse_bundle = args.reuse_existing and paths["bundle_file"].exists()
+    existing_bundle_file = paths.get("existing_bundle_file", paths["bundle_file"])
+    reuse_bundle = args.reuse_existing and existing_bundle_file.exists()
     if reuse_bundle:
-        storage_state_payload, session_by_origin, _ = load_existing_bundle(paths["bundle_file"])
+        storage_state_payload, session_by_origin, _ = load_existing_bundle(existing_bundle_file)
 
     storage_map_for_inject = local_storage_map_from_state(storage_state_payload)
     cookies_for_add: list[dict[str, Any]] = [
@@ -312,9 +547,18 @@ def launch_context_and_page(playwright: Any, args: argparse.Namespace, paths: di
     ]
 
     browser = None
+    temporary_profile_dir: Path | None = None
     if args.persistent_profile:
+        profile_dir = paths["profile_dir"]
+        if not reuse_bundle:
+            temp_profiles_root = paths["output_dir"] / ".tmp_profiles"
+            temp_profiles_root.mkdir(parents=True, exist_ok=True)
+            temporary_profile_dir = Path(
+                tempfile.mkdtemp(prefix=f"{paths['bundle_file'].stem}-", dir=str(temp_profiles_root))
+            )
+            profile_dir = temporary_profile_dir
         context = browser_type.launch_persistent_context(
-            str(paths["profile_dir"]),
+            str(profile_dir),
             headless=args.headless,
             service_workers=args.service_workers,
         )
@@ -337,7 +581,7 @@ def launch_context_and_page(playwright: Any, args: argparse.Namespace, paths: di
             context.add_init_script(script=build_storage_init_script(storage_map_for_inject, "localStorage"))
 
     page = context.pages[0] if context.pages else context.new_page()
-    return context, page, browser
+    return context, page, browser, temporary_profile_dir
 
 
 def build_bundle_payload(
@@ -377,20 +621,24 @@ def capture_command(args: argparse.Namespace) -> int:
     print(f"[INFO] Bundle file: {paths['bundle_file']}")
     print(f"[INFO] Mode: {args.mode}")
     print(f"[INFO] URL: {args.url}")
+    print(f"[INFO] Clean capture: {not args.reuse_existing}")
 
     context = None
     browser = None
+    temporary_profile_dir: Path | None = None
     try:
         with sync_playwright() as playwright:
-            context, page, browser = launch_context_and_page(playwright, args, paths)
+            context, page, browser, temporary_profile_dir = launch_context_and_page(playwright, args, paths)
             page.goto(args.url, wait_until="domcontentloaded", timeout=args.timeout_ms)
 
             if args.mode == "popup":
-                print("[ACTION] In the browser, dismiss popup/consent/country prompts as needed.")
+                print("[ACTION] Dismiss popup/consent/country/newsletter prompts only. Avoid cart activity.")
             elif args.mode == "auth":
-                print("[ACTION] In the browser, complete login/OTP/account steps.")
+                print("[ACTION] Dismiss popups and complete login/OTP/account steps. Avoid cart activity.")
+            elif args.mode == "general":
+                print("[ACTION] Do any setup needed. General mode removes cart data only.")
             else:
-                print("[ACTION] In the browser, do the required setup (popup/country/login) as needed.")
+                print("[ACTION] Do any setup needed. Raw mode saves full exact browser state.")
 
             input("[PROMPT] Press Enter after you finish manual actions and page is stable... ")
 
@@ -415,6 +663,13 @@ def capture_command(args: argparse.Namespace) -> int:
                         if isinstance(k, str)
                     }
 
+            normalized_state, session_entries, filter_report = sanitize_bundle_state(
+                storage_state=normalized_state,
+                session_by_origin=session_entries,
+                mode=args.mode,
+                keep_indexed_db=args.keep_indexed_db,
+            )
+
             cookies = normalized_state.get("cookies", [])
             cookie_summary = summarize_cookies(cookies if isinstance(cookies, list) else [])
 
@@ -431,6 +686,7 @@ def capture_command(args: argparse.Namespace) -> int:
                 "indexed_db_saved": indexed_db_saved,
                 "cookie_summary": cookie_summary,
                 "session_origin_count": len(session_entries),
+                "filter_report": filter_report,
             }
 
             bundle_payload = build_bundle_payload(
@@ -469,12 +725,17 @@ def capture_command(args: argparse.Namespace) -> int:
                 browser.close()
         except Exception:
             pass
+        if temporary_profile_dir:
+            shutil.rmtree(temporary_profile_dir, ignore_errors=True)
 
 
 def verify_command(args: argparse.Namespace) -> int:
     args.url = ensure_url(args.url)
     args.mode = normalized_mode(args.mode)
+    # Verify must load the previously saved bundle, even though capture defaults to clean.
+    args.reuse_existing = True
     paths = resolve_bundle_paths(args)
+    paths["bundle_file"] = paths["existing_bundle_file"]
 
     if not paths["bundle_file"].exists():
         print(f"[ERROR] Missing bundle file: {paths['bundle_file']}")
@@ -482,9 +743,10 @@ def verify_command(args: argparse.Namespace) -> int:
 
     context = None
     browser = None
+    temporary_profile_dir: Path | None = None
     try:
         with sync_playwright() as playwright:
-            context, page, browser = launch_context_and_page(playwright, args, paths)
+            context, page, browser, temporary_profile_dir = launch_context_and_page(playwright, args, paths)
             page.goto(args.url, wait_until="domcontentloaded", timeout=args.timeout_ms)
             page.wait_for_timeout(args.post_wait_ms)
 
@@ -531,11 +793,13 @@ def verify_command(args: argparse.Namespace) -> int:
                 browser.close()
         except Exception:
             pass
+        if temporary_profile_dir:
+            shutil.rmtree(temporary_profile_dir, ignore_errors=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Capture and verify popup/auth browser state for local user-driven flows.",
+        description="Capture and verify popup/auth/general/raw browser state for local user-driven flows.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -545,13 +809,14 @@ def build_parser() -> argparse.ArgumentParser:
             "--mode",
             choices=SUPPORTED_MODES,
             required=False,
-            help="Optional mode tag. Use popup, auth, or general. Default is general.",
+            help="Optional mode tag. Use popup, auth, general, or raw. Default is general.",
         )
         cmd.add_argument(
             "--file-name",
             help=(
                 "Output JSON filename. If omitted, defaults to <domain>-state.json, "
-                "<domain>-popup-state.json, or <domain>-auth-state.json based on mode."
+                "<domain>-popup-state.json, <domain>-auth-state.json, or "
+                "<domain>-raw-state.json based on mode."
             ),
         )
         cmd.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Output directory for state bundle files.")
@@ -559,10 +824,32 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("--headless", action="store_true", help="Run headless (not recommended for manual capture).")
         cmd.add_argument("--timeout-ms", type=int, default=60000, help="Navigation timeout in milliseconds.")
         cmd.add_argument("--service-workers", choices=("block", "allow"), default="block")
+        cmd.add_argument(
+            "--keep-indexed-db",
+            action="store_true",
+            help=(
+                "Keep IndexedDB in sanitized modes. By default IndexedDB is only kept in raw mode "
+                "because it cannot be filtered safely by key."
+            ),
+        )
         cmd.add_argument("--persistent-profile", action="store_true", help="Use a persistent browser profile directory.")
         cmd.add_argument("--profile-dir", help="Custom profile directory (used with --persistent-profile).")
-        cmd.add_argument("--reuse-existing", dest="reuse_existing", action="store_true", default=True)
-        cmd.add_argument("--no-reuse-existing", dest="reuse_existing", action="store_false")
+        cmd.add_argument(
+            "--reuse-existing",
+            dest="reuse_existing",
+            action="store_true",
+            default=False,
+            help=(
+                "Load an existing saved bundle before opening the page. "
+                "Default is false, so capture starts from a clean incognito-like Playwright context."
+            ),
+        )
+        cmd.add_argument(
+            "--no-reuse-existing",
+            dest="reuse_existing",
+            action="store_false",
+            help="Do not load an existing saved bundle before opening the page.",
+        )
 
     capture = subparsers.add_parser("capture", help="Open site, let user interact, save state file.")
     add_shared_args(capture)

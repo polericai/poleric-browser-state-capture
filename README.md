@@ -65,6 +65,12 @@ Capture auth mode:
 python capture_state.py capture --mode auth --url https://example-app.test/account
 ```
 
+Capture raw mode:
+
+```bash
+python capture_state.py capture --mode raw --url https://example-app.test/
+```
+
 Use your own file name:
 
 ```bash
@@ -96,11 +102,18 @@ python capture_state.py verify \
   - General mode: `<domain>-state.json`
   - Popup mode: `<domain>-popup-state.json`
   - Auth mode: `<domain>-auth-state.json`
+  - Raw mode: `<domain>-raw-state.json`
 
 Examples:
 - `https://example-app.test` + no mode => `browser_state/example-app-state.json`
 - `https://example-app.test` + `--mode popup` => `browser_state/example-app-popup-state.json`
 - `https://example-app.test` + `--mode auth` => `browser_state/example-app-auth-state.json`
+- `https://example-app.test` + `--mode raw` => `browser_state/example-app-raw-state.json`
+
+Versioning behavior:
+- If capture would save to a file name that already exists, a numbered version is created instead.
+- Example: `example-app-popup-state.json` -> `example-app-popup-state-2.json` -> `example-app-popup-state-3.json`
+- Default verify resolves the latest matching version for the chosen bundle family.
 
 ## Output structure
 
@@ -110,6 +123,12 @@ The bundle includes:
 - `storage_state` (Playwright cookies/localStorage/indexedDB)
 - `session_storage` (by origin)
 - `meta` (capture metadata)
+
+Mode intent:
+- `popup`: broad captured state with cart data removed
+- `auth`: broad captured state with cart data removed
+- `general`: broad captured state with cart data removed
+- `raw`: full exact browser state without sanitization
 
 ## Security note
 
