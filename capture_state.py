@@ -228,34 +228,6 @@ def summarize_cookies(cookies: list[dict[str, Any]]) -> dict[str, Any]:
         summary["expired_count"] = sum(1 for value in expiries if value <= now_ts)
 
     return summary
-AUTH_KEYWORDS = (
-    "auth",
-    "login",
-    "logged",
-    "session",
-    "sess",
-    "token",
-    "jwt",
-    "customer",
-    "account",
-    "user",
-    "member",
-    "secure_customer_sig",
-    "password",
-    "otp",
-    "access",
-    "refresh",
-    "id_token",
-    "firebase",
-    "supabase",
-    "next-auth",
-    "csrf",
-    "xsrf",
-    "remember",
-    "identity",
-    "credential",
-)
-
 DATA_KEYWORDS = (
     "cart",
     "checkout",
